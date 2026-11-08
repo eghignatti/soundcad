@@ -1,0 +1,26 @@
+[package]
+name = "soundcad"
+description = "SoundCAD desktop app: integrated speaker design (front layout, drivers, box, crossover, live response)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+soundcad-core = { path = "../soundcad-core" }
+soundcad-tools = { path = "../soundcad-tools" }
+soundcad-xover = { path = "../soundcad-xover" }
+soundcad-speaker = { path = "../soundcad-speaker" }
+# Native on Windows and Linux. No default features (drops accesskit); wgpu renderer instead of glow
+# (no OpenGL 2 on GPU-less VMs); x11 + wayland window backends for Linux.
+eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+egui_plot = "0.31.0"
+# native open/save dialogs: Win32 on Windows, XDG desktop portal on Linux (no GTK needed)
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+# datasheet graphs for SPL Trace: image files and the clipboard (both already in the tree through eframe)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
+arboard = { version = "3.4", default-features = false, features = ["image-data"] }
+
+# wgpu backends: on Linux Vulkan + OpenGL ES are always built in (Mesa llvmpipe covers GPU-less machines);
+# on Windows egui-wgpu leaves out DX12, needed for the WARP software adapter on GPU-less VMs.
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "24.0.5", default-features = false, features = ["dx12", "wgsl"] }

@@ -1,0 +1,5 @@
+/target
+/.cargo-home
+/.rustup-home
+/.work
+/data

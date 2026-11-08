@@ -1,0 +1,11 @@
+[package]
+name = "soundcad-tools"
+description = "SoundCAD tools: enclosure, diffraction, datasheet curve tracing"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+soundcad-core = { path = "../soundcad-core" }
+num-complex.workspace = true

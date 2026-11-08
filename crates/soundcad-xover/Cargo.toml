@@ -1,0 +1,11 @@
+[package]
+name = "soundcad-xover"
+description = "SoundCAD crossover simulator: schematic netlist, circuit solver, driver summing"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+soundcad-core = { path = "../soundcad-core" }
+num-complex.workspace = true

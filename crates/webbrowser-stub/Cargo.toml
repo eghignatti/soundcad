@@ -1,0 +1,8 @@
+[package]
+# Local stand-in for crates.io `webbrowser` (pulled in by egui-winit to open links): the real crate links
+# shlwapi, which the in-folder MinGW toolchain has no import library for. Patched in via [patch.crates-io].
+name = "webbrowser"
+version = "1.0.3"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false

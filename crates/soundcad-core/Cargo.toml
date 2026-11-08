@@ -1,0 +1,10 @@
+[package]
+name = "soundcad-core"
+description = "Frequency response data model, file I/O and Calculator operations for SoundCAD"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+num-complex.workspace = true

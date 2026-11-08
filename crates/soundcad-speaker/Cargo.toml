@@ -1,0 +1,14 @@
+[package]
+name = "soundcad-speaker"
+description = "SoundCAD integrated speaker model: drivers, cabinet front, box loading and crossover in one calculation chain"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+num-complex.workspace = true
+serde.workspace = true
+serde_json = { version = "1", features = ["float_roundtrip"] }
+soundcad-core = { path = "../soundcad-core" }
+soundcad-tools = { path = "../soundcad-tools" }
+soundcad-xover = { path = "../soundcad-xover" }
