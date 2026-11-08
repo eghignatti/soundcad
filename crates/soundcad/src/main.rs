@@ -19,7 +19,8 @@ use soundcad_speaker::catalog::{Entry, Kind, DEFAULT_BOX, TWEETER_DD};
 use soundcad_speaker::optimize;
 use soundcad_speaker::network::{self, Align, Element, Shape, Stage, Way};
 use soundcad_speaker::schematic::Schematic;
-use soundcad_speaker::{Design, Front, Source, Speaker, Unit, VARIANT_COUNT};
+use soundcad_speaker::{cabinet_analysis, Design, Front, Source, Speaker, Unit, VARIANT_COUNT};
+use soundcad_tools::cabinet::{Analysis, Cabinet, MODES_MAX_HZ};
 use soundcad_tools::enclosure::{area_diameter, Driver, Enclosure, PassiveRadiator, Radiator};
 
 /// One chart: curves on the result's frequency grid, y range and unit.
@@ -706,11 +707,12 @@ impl App {
     /// Box of the selected driver (T/S model, or box correction of a measured response) and its port.
     fn box_tab(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
+        let analysis = cabinet_analysis(&self.design.front, &self.design.units, self.selected);
         let Some(u) = self.design.units.get_mut(self.selected) else {
             ui.label("No driver yet.");
             return false;
         };
-        let Unit { source, port, port_rect, .. } = u;
+        let Unit { source, port, port_rect, cabinet, .. } = u;
         let (driver, radiator) = match source {
             Source::Simulated { driver, radiator } => (Some(&*driver), Some(radiator)),
             Source::HalfSpace { box_correction: Some((driver, radiator)), .. } => (Some(&*driver), Some(radiator)),
@@ -725,11 +727,18 @@ impl App {
             }
             return false;
         };
-        changed |= box_editor(ui, r);
+        // with a cabinet set, volume and Qa are results: shown here, and the simulation takes them from there
+        if let Some(a) = &analysis {
+            *r = a.fit(*r);
+        }
+        changed |= box_editor(ui, r, analysis.is_some());
         if let (Some(d), false) = (driver, matches!(r, Radiator::InfiniteBaffle)) {
-            if let Some(fb) = (Enclosure { driver: d.clone(), radiator: *r, eg: 2.83 }).simulate(&[100.0]).fb {
+            if let Some(fb) = (Enclosure { driver: d.clone(), radiator: *r, eg: 2.83, modes: vec![] }).simulate(&[100.0]).fb {
                 ui.label(format!("Fb {fb:.1} Hz"));
             }
+        }
+        if !matches!(r, Radiator::InfiniteBaffle) {
+            changed |= cabinet_editor(ui, cabinet, analysis.as_ref());
         }
         if let (Radiator::Passive { pr, .. }, Some((px, py, _))) = (&mut *r, &mut *port) {
             let passives: Vec<_> = self.catalog.cat.entries.iter().filter(|e| e.kind == Kind::Passive).collect();
@@ -756,7 +765,7 @@ impl App {
             });
             ui.label(egui::RichText::new("Several radiators are modelled as one source of the same total area.").weak());
         }
-        if let (Radiator::BassReflex { diam, n, .. }, Some((px, py, _))) = (r, port) {
+        if let (Radiator::BassReflex { diam, n, len, .. }, Some((px, py, _))) = (r, port) {
             section(ui, "Vent");
             ui.horizontal(|ui| {
                 let mut rect = port_rect.is_some();
@@ -788,6 +797,9 @@ impl App {
                         ui.end_row();
                     }
                 }
+                ui.label("Length");
+                changed |= ui.add(egui::DragValue::new(len).speed(0.1).range(0.1..=1000.0).suffix(" cm")).changed();
+                ui.end_row();
                 ui.label("Number of vents");
                 changed |= ui.add(egui::DragValue::new(n).range(1..=4)).changed();
                 ui.end_row();
@@ -1301,7 +1313,7 @@ fn box_kind(r: &Radiator) -> usize {
 }
 
 /// Box type and parameters; returns true when edited.
-fn box_editor(ui: &mut egui::Ui, r: &mut Radiator) -> bool {
+fn box_editor(ui: &mut egui::Ui, r: &mut Radiator, locked: bool) -> bool {
     let mut changed = false;
     let kind = box_kind(r);
     let mut k = kind;
@@ -1334,7 +1346,8 @@ fn box_editor(ui: &mut egui::Ui, r: &mut Radiator) -> bool {
     egui::Grid::new("box").num_columns(2).show(ui, |ui| {
         let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f64, suffix: &str| {
             ui.label(label);
-            changed |= ui.add(egui::DragValue::new(v).speed(0.1).range(0.1..=1000.0).suffix(suffix)).changed();
+            let derived = locked && matches!(label, "Volume" | "Qa");
+            changed |= ui.add_enabled(!derived, egui::DragValue::new(v).speed(0.1).range(0.1..=1000.0).suffix(suffix)).changed();
             ui.end_row();
         };
         match r {
@@ -1359,6 +1372,80 @@ fn box_editor(ui: &mut egui::Ui, r: &mut Radiator) -> bool {
     if let Radiator::Passive { pr, .. } = r {
         changed |= pr_editor(ui, pr);
     }
+    changed
+}
+/// Cabinet interior: depth, walls and lining, with what follows from them (volume, Qa, absorption, reverberation,
+/// internal resonances and how much of them the vent lets out). Returns true when edited.
+fn cabinet_editor(ui: &mut egui::Ui, cab: &mut Option<Cabinet>, a: Option<&Analysis>) -> bool {
+    let mut changed = false;
+    section(ui, "Cabinet interior and damping");
+    let mut on = cab.is_some();
+    if ui.checkbox(&mut on, "Volume, Qa and internal resonances from the cabinet").changed() {
+        *cab = on.then(Cabinet::default);
+        changed = true;
+    }
+    let (Some(c), Some(a)) = (cab.as_mut(), a) else {
+        ui.label(egui::RichText::new("Off: the box is an ideal volume with the Qa typed above.").weak());
+        return changed;
+    };
+    let max_pct = if a.surface > 0.0 { a.max_lined / a.surface * 100.0 } else { 0.0 };
+    egui::Grid::new("cabinet").num_columns(2).show(ui, |ui| {
+        let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, suffix: &str| {
+            ui.label(label);
+            changed |= ui.add(egui::DragValue::new(v).speed(0.5).range(range).suffix(suffix)).changed();
+            ui.end_row();
+        };
+        row(ui, "Internal depth", &mut c.depth, 20.0..=2000.0, " mm");
+        row(ui, "Wall thickness", &mut c.wall, 0.0..=60.0, " mm");
+        row(ui, "Lining thickness", &mut c.lining, 0.0..=200.0, " mm");
+        row(ui, "Lining density", &mut c.density, 5.0..=300.0, " kg/m³");
+        row(ui, "Lined surface", &mut c.coverage, 0.0..=max_pct, " %");
+    });
+    let (w, h, d) = a.dims;
+    ui.label(format!("Inside {:.0} × {:.0} × {:.0} mm = {:.1} l, minus lining {:.1} l and vents {:.1} l: {:.1} l of air, Qa {:.1}", w * 1e3, h * 1e3, d * 1e3, a.gross_l, a.lining_l, a.vents_l, a.vb, a.qa));
+    ui.label(format!("Surface {:.3} m², holes {:.3} m²: at most {:.3} m² ({max_pct:.0} %) can be lined; lined {:.3} m². Lining σ ≈ {:.0} Pa·s/m²", a.surface, a.holes, a.max_lined, a.lined, a.sigma));
+    egui::Grid::new("cab_abs").num_columns(6).striped(true).show(ui, |ui| {
+        let fs = [125.0, 250.0, 500.0, 1000.0, 2000.0];
+        ui.label("Frequency");
+        for f in fs {
+            ui.label(format!("{f:.0} Hz"));
+        }
+        ui.end_row();
+        ui.label("Absorption");
+        for f in fs {
+            ui.label(format!("{:.2}", a.alpha(f)));
+        }
+        ui.end_row();
+        ui.label("Reverb. time");
+        for f in fs {
+            ui.label(format!("{:.0} ms", a.t60(f) * 1e3));
+        }
+        ui.end_row();
+    });
+    if a.modes.iter().all(|m| m.at_vent == 0.0) {
+        ui.label(egui::RichText::new("No vent: internal resonances stay inside the box.").weak());
+        return changed;
+    }
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Internal resonances heard at the vent (lowest with real pressure at the vent)").strong());
+    for m in a.modes.iter().filter(|m| m.at_vent.abs() > 0.2).take(8) {
+        ui.label(format!("{:6.0} Hz   mode {}-{}-{}   pressure at vent {:+.0} %   Q {:.0}", m.f, m.n.0, m.n.1, m.n.2, m.at_vent * 100.0, m.q));
+    }
+    let pts: PlotPoints = (0..240)
+        .map(|i| {
+            let f = 30.0 * (MODES_MAX_HZ / 30.0).powf(i as f64 / 239.0);
+            [f.log10(), 20.0 * a.vent_factor(f).norm().log10()]
+        })
+        .collect();
+    Plot::new("cab_vent")
+        .height(150.0)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_drag(false)
+        .x_axis_formatter(|m, _| format!("{:.0} Hz", 10f64.powf(m.value)))
+        .y_axis_label("dB vs. uniform pressure")
+        .show(ui, |pu| pu.line(Line::new(pts)));
+    ui.label(egui::RichText::new("Rectangular box, driver and vent on the front. The cone does not feel the modes; estimate, not a measurement.").weak());
     changed
 }
 /// Passive radiator parameters as in the Enclosure tool; fs follows Vas, Sd and Mms until edited by hand.

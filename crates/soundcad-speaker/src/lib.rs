@@ -19,6 +19,7 @@ pub mod schematic;
 use serde::{Deserialize, Serialize};
 
 use soundcad_core::{Plane, Response};
+use soundcad_tools::cabinet::{self, Cabinet};
 use soundcad_tools::diffraction::Baffle;
 use soundcad_tools::enclosure::{self, Enclosure, Radiator};
 use soundcad_xover::{DriverResponses, Project, Simulation};
@@ -85,18 +86,50 @@ pub struct Unit {
     /// repeated here: they are in `source`.
     #[serde(default)]
     pub record: Option<catalog::Entry>,
+    /// Box interior (depth, lining): when set, the air volume and Qa of the box model come from it and the
+    /// internal resonances shape what the vent radiates.
+    #[serde(default)]
+    pub cabinet: Option<Cabinet>,
 }
 
 impl Unit {
     /// A unit at (`x`, `y`) on the front: no depth, frame size, vent or catalog record.
     pub fn new(name: impl Into<String>, (x, y): (f64, f64), dd: f64, source: Source) -> Self {
-        Unit { name: name.into(), x, y, z: 0.0, dd, outer_d: 0.0, source, port: None, port_rect: None, record: None }
+        Unit { name: name.into(), x, y, z: 0.0, dd, outer_d: 0.0, source, port: None, port_rect: None, record: None, cabinet: None }
+    }
+
+    /// The box model of the unit, if it has one.
+    pub fn radiator(&self) -> Option<&Radiator> {
+        match &self.source {
+            Source::Simulated { radiator, .. } | Source::HalfSpace { box_correction: Some((_, radiator)), .. } => Some(radiator),
+            _ => None,
+        }
     }
 
     /// Diameter of the circle the unit takes on the front, mm.
     pub fn footprint(&self) -> f64 {
         self.dd.max(self.outer_d)
     }
+}
+
+/// Interior analysis of the box of unit `i` (`None`: no cabinet set, or the unit has no box model). Holes are the
+/// cut-outs and vents of every unit on the front.
+pub fn cabinet_analysis(front: &Front, units: &[Unit], i: usize) -> Option<cabinet::Analysis> {
+    let u = units.get(i)?;
+    let (cab, radiator) = (u.cabinet?, u.radiator()?);
+    if matches!(radiator, Radiator::InfiniteBaffle) {
+        return None;
+    }
+    let circle = |d: f64| std::f64::consts::PI * d * d / 4.0;
+    let holes = units.iter().map(|v| circle(v.dd) + v.port.map_or(0.0, |p| v.port_rect.map_or(circle(p.2), |(w, h)| w * h))).sum();
+    // a bass-reflex vent without a position radiates from the cone
+    let (vent, vents_l) = match *radiator {
+        Radiator::BassReflex { diam, len, n, .. } => (Some(u.port.map_or((u.x, u.y), |p| (p.0, p.1))), n as f64 * circle(diam) * len / 1000.0),
+        Radiator::Passive { .. } => (u.port.map(|p| (p.0, p.1)), 0.0),
+        _ => (None, 0.0),
+    };
+    let (width, height) = front.size();
+    Some(cab.analyze(&cabinet::Setup { width, height, holes, vents_l, driver: (u.x, u.y), vent }))
 }
 
 /// `r` advanced by `delay` seconds (removes a delay: the radiator's position is modelled by the front).
@@ -206,7 +239,8 @@ impl Speaker {
         let mut meas = vec![];
         let mut ports = vec![];
         p.drivers.clear();
-        for u in &self.units {
+        for (idx, u) in self.units.iter().enumerate() {
+            let cab = cabinet_analysis(&self.front, &self.units, idx);
             let (resp, port) = match &u.source {
                 Source::InCabinet { responses } => {
                     // measurements come on their own frequency grids
@@ -217,7 +251,10 @@ impl Speaker {
                     (DriverResponses { hor: grid(&responses.hor), ver: grid(&responses.ver), impedance: responses.impedance.clone() }, None)
                 }
                 source => {
-                    let box_sim = |driver: &enclosure::Driver, radiator| Enclosure { driver: driver.clone(), radiator, eg: self.eg }.simulate(&freq);
+                    let box_sim = |driver: &enclosure::Driver, radiator: Radiator| {
+                        let (radiator, modes) = cab.as_ref().map_or((radiator, vec![]), |a| (a.fit(radiator), a.modes.clone()));
+                        Enclosure { driver: driver.clone(), radiator, eg: self.eg, modes }.simulate(&freq)
+                    };
                     // half-space cone and vent responses, the passive radiator's delay and the impedance
                     let (cone, vent, pr_delay, impedance) = match source {
                         Source::Simulated { driver, radiator } => {

@@ -95,6 +95,9 @@ pub struct Enclosure {
     pub radiator: Radiator,
     /// Amplifier output voltage U [V].
     pub eg: f64,
+    /// Internal resonances of the cabinet (see `cabinet`); they shape what the vent or passive radiator radiates.
+    /// Empty = uniform pressure in the box.
+    pub modes: Vec<crate::cabinet::Mode>,
 }
 
 /// Results of an enclosure simulation.
@@ -243,7 +246,7 @@ impl Enclosure {
                 }
                 zm += sd * sd / y;
                 if let Some((zp, len)) = port {
-                    port_share = (-s * (len / C_AIR)).exp() / (y * zp);
+                    port_share = (-s * (len / C_AIR)).exp() / (y * zp) * crate::cabinet::vent_factor(&self.modes, f);
                 }
             }
             let u = bl * self.eg / d.re / (zm + bl * bl / d.re);
